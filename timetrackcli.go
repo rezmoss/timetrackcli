@@ -130,36 +130,48 @@ func (m dashboardModel) View() string {
 		idlePct = float64(idleMins) / float64(totalMins) * 100
 	}
 
-	// Progress bar for daily goal - adjust to available width
-	progressBarWidth := m.width - 30 // Account for text and padding
-	if progressBarWidth < 20 {
-		progressBarWidth = 20
-	}
-	goalPct := 0
-	if m.store.Config.DailyGoalMinutes > 0 {
-		goalPct = (workMins * 100) / m.store.Config.DailyGoalMinutes
-	}
-	progressBar := createProgressBar(goalPct, progressBarWidth)
-
 	// Calculate column widths - use full terminal width
 	leftColWidth := m.width/2 - 3
 	rightColWidth := m.width/2 - 3
 
-	todayBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
-		"📅 TODAY'S ACTIVITY\n\n"+
-			"Working: %s %s (%.1f%%)\n"+
-			"Idle: %s %s (%.1f%%)\n"+
-			"Total: %s\n\n"+
-			"Daily Goal Progress: %s\n%s\n%s",
-		workingStyle.Render("●"), humanDuration(workMins), workPct,
-		idleStyle.Render("●"), humanDuration(idleMins), idlePct,
-		humanDuration(totalMins),
-		progressStyle.Render(fmt.Sprintf("%d%%", goalPct)),
-		progressBar,
+	workingHoursBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
+		"💼 WORKING HOURS\n\n"+
+			"Working: %s\n"+
+			"Progress: %s",
+		workingStyle.Render(humanDuration(workMins)),
 		progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)),
 	))
 
-	// Live status - adjust height based on available space
+	// Progress Bar Box (replace the gauge box)
+	goalPct := 0
+	if m.store.Config.DailyGoalMinutes > 0 {
+		goalPct = (workMins * 100) / m.store.Config.DailyGoalMinutes
+	}
+	progressBarWidth := leftColWidth - 10 // Account for box padding
+	if progressBarWidth < 20 {
+		progressBarWidth = 20
+	}
+	progressBar := createProgressBar(goalPct, progressBarWidth)
+
+	progressBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
+		"🎯 DAILY GOAL PROGRESS\n\n%s %d%%\n%s",
+		progressBar,
+		goalPct,
+		progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)),
+	))
+
+	// Summary stats box
+	summaryBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
+		"📊 TODAY'S SUMMARY\n\n"+
+			"Working: %s %s (%.1f%%)\n"+
+			"Idle: %s %s (%.1f%%)\n"+
+			"Total: %s",
+		workingStyle.Render("●"), humanDuration(workMins), workPct,
+		idleStyle.Render("●"), humanDuration(idleMins), idlePct,
+		humanDuration(totalMins),
+	))
+
+	// Live status
 	var status string
 	var statusColor lipgloss.Style
 	if la, err := lastActivity(now); err == nil {
@@ -185,7 +197,7 @@ func (m dashboardModel) View() string {
 	timelineBox := createTimelineBox(m.store, rightColWidth, m.height-8) // Reserve space for header/footer
 
 	// Layout with full width
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, todayBox, liveBox)
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, liveBox)
 	rightColumn := timelineBox
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
@@ -275,8 +287,10 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 			style = idleStyle
 		}
 
+		duration := int(endBin.Sub(startBin).Minutes())
+
 		timeRange := fmt.Sprintf("%s-%s", startBin.Format("15:04"), endBin.Format("15:04"))
-		timeline += fmt.Sprintf("%s %s %s\n", indicator, timeRange, style.Render(desc))
+		timeline += fmt.Sprintf("%s %s %s (%s)\n", indicator, timeRange, style.Render(desc), humanDuration(duration))
 		i = j - 1
 	}
 
