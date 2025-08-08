@@ -109,14 +109,14 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m dashboardModel) View() string {
-	if m.width == 0 {
+	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
 
 	now := time.Now()
 
-	// Header
-	header := headerStyle.Width(m.width - 4).Render(
+	// Header - full width
+	header := headerStyle.Width(m.width).Render(
 		fmt.Sprintf("🕐 Time Tracker Dashboard - %s", now.Format("Jan 2, 2006 15:04:05")),
 	)
 
@@ -130,19 +130,27 @@ func (m dashboardModel) View() string {
 		idlePct = float64(idleMins) / float64(totalMins) * 100
 	}
 
-	// Progress bar for daily goal
+	// Progress bar for daily goal - adjust to available width
+	progressBarWidth := m.width - 30 // Account for text and padding
+	if progressBarWidth < 20 {
+		progressBarWidth = 20
+	}
 	goalPct := 0
 	if m.store.Config.DailyGoalMinutes > 0 {
 		goalPct = (workMins * 100) / m.store.Config.DailyGoalMinutes
 	}
-	progressBar := createProgressBar(goalPct, 40)
+	progressBar := createProgressBar(goalPct, progressBarWidth)
 
-	todayBox := boxStyle.Render(fmt.Sprintf(
+	// Calculate column widths - use full terminal width
+	leftColWidth := m.width/2 - 3
+	rightColWidth := m.width/2 - 3
+
+	todayBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
 		"📅 TODAY'S ACTIVITY\n\n"+
 			"Working: %s %s (%.1f%%)\n"+
 			"Idle: %s %s (%.1f%%)\n"+
 			"Total: %s\n\n"+
-			"Daily Goal Progress: %s\n%s %s",
+			"Daily Goal Progress: %s\n%s\n%s",
 		workingStyle.Render("●"), humanDuration(workMins), workPct,
 		idleStyle.Render("●"), humanDuration(idleMins), idlePct,
 		humanDuration(totalMins),
@@ -151,7 +159,7 @@ func (m dashboardModel) View() string {
 		progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)),
 	))
 
-	// Live status
+	// Live status - adjust height based on available space
 	var status string
 	var statusColor lipgloss.Style
 	if la, err := lastActivity(now); err == nil {
@@ -168,31 +176,41 @@ func (m dashboardModel) View() string {
 		statusColor = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500"))
 	}
 
-	liveBox := boxStyle.Render(fmt.Sprintf(
+	liveBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
 		"⚡ LIVE STATUS\n\n%s",
 		statusColor.Render(status),
 	))
 
-	// Recent activity timeline
-	timelineBox := createTimelineBox(m.store)
+	// Timeline box - use full height available
+	timelineBox := createTimelineBox(m.store, rightColWidth, m.height-8) // Reserve space for header/footer
 
-	// Layout
+	// Layout with full width
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, todayBox, liveBox)
 	rightColumn := timelineBox
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
 
 	footer := lipgloss.NewStyle().
+		Width(m.width).
 		Foreground(lipgloss.Color("#626262")).
 		Render("Press 'q' or Ctrl+C to quit • Updates every 30 seconds")
 
-	return lipgloss.JoinVertical(
+	// Use full terminal height
+	fullContent := lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
 		content,
-		"",
 		footer,
 	)
+
+	// Ensure content fills the terminal height
+	contentHeight := lipgloss.Height(fullContent)
+	if contentHeight < m.height {
+		padding := strings.Repeat("\n", m.height-contentHeight-1)
+		fullContent += padding
+	}
+
+	return fullContent
 }
 
 func createProgressBar(percentage int, width int) string {
@@ -204,7 +222,7 @@ func createProgressBar(percentage int, width int) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("#04B575")).Render(bar)
 }
 
-func createTimelineBox(s *Store) string {
+func createTimelineBox(s *Store, width, maxHeight int) string {
 	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	bins := fetchBins(s, start, now)
@@ -224,10 +242,16 @@ func createTimelineBox(s *Store) string {
 
 	timeline := "📊 TODAY'S TIMELINE\n\n"
 
-	// Show last 10 activity blocks
+	// Calculate how many entries we can show based on available height
+	maxEntries := maxHeight - 6 // Account for box borders and header
+	if maxEntries < 5 {
+		maxEntries = 5
+	}
+
+	// Show most recent activity blocks that fit in the height
 	start_idx := 0
-	if len(seq) > 10 {
-		start_idx = len(seq) - 10
+	if len(seq) > maxEntries {
+		start_idx = len(seq) - maxEntries
 	}
 
 	for i := start_idx; i < len(seq); i++ {
@@ -256,7 +280,7 @@ func createTimelineBox(s *Store) string {
 		i = j - 1
 	}
 
-	return boxStyle.Width(35).Render(timeline)
+	return boxStyle.Width(width).Height(maxHeight).Render(timeline)
 }
 
 func loadStore(path string) (*Store, error) {
