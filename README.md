@@ -1,5 +1,25 @@
 # timetracking
 
+
+Run as track time from command line
+
+
+./timetrackcli 
+
+
+Today report
+./timetrackcli --report
+
+Week
+./timetrackcli --report --range=week
+
+Month
+./timetrackcli --report --range=month
+
+Year
+./timetrackcli --report --range=year
+
+
 go build -o timetrackcli timetrackcli.go
 
 

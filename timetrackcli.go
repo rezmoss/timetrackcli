@@ -14,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -30,6 +33,230 @@ type Config struct {
 type Store struct {
 	Bins   map[string]int `json:"bins"`
 	Config Config         `json:"config"`
+}
+
+type dashboardModel struct {
+	store    *Store
+	filePath string
+	width    int
+	height   int
+}
+
+var (
+	titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FAFAFA")).
+			Background(lipgloss.Color("#7D56F4")).
+			Padding(0, 1)
+
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#4A90E2")).
+			Padding(0, 1).
+			MarginBottom(1)
+
+	workingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#04B575")).
+			Bold(true)
+
+	idleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF6B6B")).
+			Bold(true)
+
+	progressStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F7DC6F")).
+			Bold(true)
+
+	boxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#874BFD")).
+			Padding(1, 2).
+			MarginBottom(1)
+)
+
+type tickMsg time.Time
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second*30, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+func (m dashboardModel) Init() tea.Cmd {
+	return tickCmd()
+}
+
+func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "esc", "ctrl+c":
+			return m, tea.Quit
+		}
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+	case tickMsg:
+		// Reload store data
+		store, err := loadStore(m.filePath)
+		if err == nil {
+			m.store = store
+		}
+		return m, tickCmd()
+	}
+	return m, nil
+}
+
+func (m dashboardModel) View() string {
+	if m.width == 0 {
+		return "Loading..."
+	}
+
+	now := time.Now()
+
+	// Header
+	header := headerStyle.Width(m.width - 4).Render(
+		fmt.Sprintf("🕐 Time Tracker Dashboard - %s", now.Format("Jan 2, 2006 15:04:05")),
+	)
+
+	// Today's stats
+	workMins, idleMins := todayTotals(m.store)
+	totalMins := workMins + idleMins
+
+	var workPct, idlePct float64
+	if totalMins > 0 {
+		workPct = float64(workMins) / float64(totalMins) * 100
+		idlePct = float64(idleMins) / float64(totalMins) * 100
+	}
+
+	// Progress bar for daily goal
+	goalPct := 0
+	if m.store.Config.DailyGoalMinutes > 0 {
+		goalPct = (workMins * 100) / m.store.Config.DailyGoalMinutes
+	}
+	progressBar := createProgressBar(goalPct, 40)
+
+	todayBox := boxStyle.Render(fmt.Sprintf(
+		"📅 TODAY'S ACTIVITY\n\n"+
+			"Working: %s %s (%.1f%%)\n"+
+			"Idle: %s %s (%.1f%%)\n"+
+			"Total: %s\n\n"+
+			"Daily Goal Progress: %s\n%s %s",
+		workingStyle.Render("●"), humanDuration(workMins), workPct,
+		idleStyle.Render("●"), humanDuration(idleMins), idlePct,
+		humanDuration(totalMins),
+		progressStyle.Render(fmt.Sprintf("%d%%", goalPct)),
+		progressBar,
+		progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)),
+	))
+
+	// Live status
+	var status string
+	var statusColor lipgloss.Style
+	if la, err := lastActivity(now); err == nil {
+		idleSeconds := now.Sub(la).Seconds()
+		if idleSeconds < 60 {
+			status = "🟢 ACTIVE"
+			statusColor = workingStyle
+		} else {
+			status = fmt.Sprintf("🔴 IDLE (%s)", humanDuration(int(idleSeconds/60)))
+			statusColor = idleStyle
+		}
+	} else {
+		status = "❓ UNKNOWN"
+		statusColor = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500"))
+	}
+
+	liveBox := boxStyle.Render(fmt.Sprintf(
+		"⚡ LIVE STATUS\n\n%s",
+		statusColor.Render(status),
+	))
+
+	// Recent activity timeline
+	timelineBox := createTimelineBox(m.store)
+
+	// Layout
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, todayBox, liveBox)
+	rightColumn := timelineBox
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
+
+	footer := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262")).
+		Render("Press 'q' or Ctrl+C to quit • Updates every 30 seconds")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		content,
+		"",
+		footer,
+	)
+}
+
+func createProgressBar(percentage int, width int) string {
+	if percentage > 100 {
+		percentage = 100
+	}
+	filled := (percentage * width) / 100
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#04B575")).Render(bar)
+}
+
+func createTimelineBox(s *Store) string {
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	bins := fetchBins(s, start, now)
+
+	var seq []time.Time
+	for cur := floorToBin(start); cur.Before(floorToBin(now)); cur = cur.Add(binMinutes * time.Minute) {
+		seq = append(seq, cur)
+	}
+
+	status := map[time.Time]int{}
+	for _, t := range seq {
+		status[t] = 0
+	}
+	for t, v := range bins {
+		status[t] = v
+	}
+
+	timeline := "📊 TODAY'S TIMELINE\n\n"
+
+	// Show last 10 activity blocks
+	start_idx := 0
+	if len(seq) > 10 {
+		start_idx = len(seq) - 10
+	}
+
+	for i := start_idx; i < len(seq); i++ {
+		startBin := seq[i]
+		st := status[startBin]
+		j := i
+		for j < len(seq) && status[seq[j]] == st {
+			j++
+		}
+		endBin := seq[j-1].Add(binMinutes * time.Minute)
+
+		var indicator, desc string
+		var style lipgloss.Style
+		if st == 1 {
+			indicator = "🟢"
+			desc = "working"
+			style = workingStyle
+		} else {
+			indicator = "🔴"
+			desc = "idle"
+			style = idleStyle
+		}
+
+		timeRange := fmt.Sprintf("%s-%s", startBin.Format("15:04"), endBin.Format("15:04"))
+		timeline += fmt.Sprintf("%s %s %s\n", indicator, timeRange, style.Render(desc))
+		i = j - 1
+	}
+
+	return boxStyle.Width(35).Render(timeline)
 }
 
 func loadStore(path string) (*Store, error) {
@@ -484,6 +711,7 @@ func main() {
 	rng := flag.String("range", "today", "report range: today|week|month|year")
 	file := flag.String("file", defaultFile, "path to JSON store")
 	configFlag := flag.String("config", "", "config in format key=value (e.g., dailygoal=07:30 or workdays=Mon-Fri)")
+	dashboardFlag := flag.Bool("dashboard", false, "show interactive dashboard")
 
 	flag.Parse()
 
@@ -543,6 +771,19 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "load store:", err)
 		os.Exit(1)
+	}
+
+	if *dashboardFlag {
+		m := dashboardModel{
+			store:    store,
+			filePath: *file,
+		}
+		p := tea.NewProgram(m, tea.WithAltScreen())
+		if _, err := p.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error running dashboard: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if *reportFlag {
