@@ -22,15 +22,27 @@ const (
 	defaultFile   = "timetrackcli.json"
 )
 
+type Config struct {
+	DailyGoalMinutes int   `json:"daily_goal_minutes"`
+	WorkDays         []int `json:"work_days"` // 1=Monday, 7=Sunday
+}
+
 type Store struct {
-	Bins map[string]int `json:"bins"`
+	Bins   map[string]int `json:"bins"`
+	Config Config         `json:"config"`
 }
 
 func loadStore(path string) (*Store, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &Store{Bins: map[string]int{}}, nil
+			return &Store{
+				Bins: map[string]int{},
+				Config: Config{
+					DailyGoalMinutes: 480,
+					WorkDays:         []int{1, 2, 3, 4, 5},
+				},
+			}, nil
 		}
 		return nil, err
 	}
@@ -42,6 +54,14 @@ func loadStore(path string) (*Store, error) {
 	if s.Bins == nil {
 		s.Bins = map[string]int{}
 	}
+
+	if s.Config.DailyGoalMinutes == 0 {
+		s.Config.DailyGoalMinutes = 480 // 8 hours
+	}
+	if len(s.Config.WorkDays) == 0 {
+		s.Config.WorkDays = []int{1, 2, 3, 4, 5} // Mon-Fri
+	}
+
 	return &s, nil
 }
 
@@ -194,6 +214,9 @@ func reportToday(s *Store) {
 	}
 	fmt.Println(strings.Repeat("-", 50))
 	fmt.Printf("Total working today : %s\n", humanDuration(totalWork))
+	if isWorkDay(now, s.Config.WorkDays) {
+		fmt.Printf("Daily goal progress: %s\n", formatPercentage(totalWork, s.Config.DailyGoalMinutes))
+	}
 }
 
 // Daily aggregate table used for week/month ranges
@@ -227,6 +250,17 @@ func reportAggregateDaily(s *Store, start time.Time, days int, title string) {
 		noun = "month"
 	}
 	fmt.Printf("Total working %s : %s\n", noun, humanDuration(total))
+	workDaysInRange := 0
+	for i := 0; i < days; i++ {
+		if isWorkDay(start.AddDate(0, 0, i), s.Config.WorkDays) {
+			workDaysInRange++
+		}
+	}
+	if workDaysInRange > 0 {
+		expectedMins := workDaysInRange * s.Config.DailyGoalMinutes
+		fmt.Printf("Goal progress: %s\n", formatPercentage(total, expectedMins))
+	}
+
 }
 
 // Year report: monthly totals
@@ -252,6 +286,18 @@ func reportYearMonthly(s *Store, year int) {
 	}
 	fmt.Println(strings.Repeat("-", 50))
 	fmt.Printf("Total working year : %s\n", humanDuration(total))
+	workDaysInYear := 0
+	for m := time.January; m <= time.December; m++ {
+		start := time.Date(year, m, 1, 0, 0, 0, 0, loc)
+		next := start.AddDate(0, 1, 0)
+		for d := start; d.Before(next); d = d.AddDate(0, 0, 1) {
+			if isWorkDay(d, s.Config.WorkDays) {
+				workDaysInYear++
+			}
+		}
+	}
+	expectedMins := workDaysInYear * s.Config.DailyGoalMinutes
+	fmt.Printf("Goal progress: %s\n", formatPercentage(total, expectedMins))
 }
 
 func report(s *Store, rng string) {
@@ -303,49 +349,6 @@ func todayTotals(s *Store) (workMins, idleMins int) {
 		}
 	}
 	return
-}
-
-func main() {
-	reportFlag := flag.Bool("report", false, "print report and exit")
-	rng := flag.String("range", "today", "report range: today|week|month|year")
-	file := flag.String("file", defaultFile, "path to JSON store")
-	flag.Parse()
-
-	if execPath, err := os.Executable(); err == nil {
-		ensureStartupAtLogin(execPath)
-	}
-
-	if dir := filepath.Dir(*file); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil && !os.IsExist(err) {
-			fmt.Fprintln(os.Stderr, "mkdir:", err)
-			os.Exit(1)
-		}
-	}
-
-	store, err := loadStore(*file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "load store:", err)
-		os.Exit(1)
-	}
-
-	if *reportFlag {
-		report(store, *rng)
-		return
-	}
-
-	fmt.Println("[timetracking] Tracking started. Ctrl+C to stop.")
-	for {
-		now := time.Now()
-		currentBin := floorToBin(now)
-		if la, err := lastActivity(now); err == nil {
-			working := !la.Before(currentBin) // last activity >= bin start
-			upsertBin(store, currentBin, working)
-			_ = saveStore(*file, store)
-		}
-		w, i := todayTotals(store)
-		fmt.Printf("[status] working: %s | idle: %s\r", humanDuration(w), humanDuration(i))
-		time.Sleep(sampleSeconds * time.Second)
-	}
 }
 
 func ensureStartupAtLogin(execPath string) {
@@ -405,4 +408,159 @@ func ensureStartupAtLogin(execPath string) {
 	_ = exec.Command("launchctl", "enable", "gui/"+uid+"/"+label).Run()
 	_ = exec.Command("launchctl", "kickstart", "-k", "gui/"+uid+"/"+label).Run()
 	fmt.Println("[startup] Added to login (LaunchAgents):", plistPath)
+}
+
+func parseTimeToMinutes(timeStr string) (int, error) {
+	parts := strings.Split(timeStr, ":")
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("invalid time format, use HH:MM")
+	}
+	hours, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, err
+	}
+	mins, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, err
+	}
+	return hours*60 + mins, nil
+}
+
+func parseWorkDays(workDaysStr string) ([]int, error) {
+	dayMap := map[string]int{
+		"mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "sun": 7,
+	}
+
+	var days []int
+	if strings.Contains(workDaysStr, "-") {
+		parts := strings.Split(workDaysStr, "-")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid range format")
+		}
+		start, ok1 := dayMap[strings.ToLower(parts[0])]
+		end, ok2 := dayMap[strings.ToLower(parts[1])]
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("invalid day names")
+		}
+		for i := start; i <= end; i++ {
+			days = append(days, i)
+		}
+	} else {
+		parts := strings.Split(workDaysStr, ",")
+		for _, part := range parts {
+			day, ok := dayMap[strings.ToLower(strings.TrimSpace(part))]
+			if !ok {
+				return nil, fmt.Errorf("invalid day name: %s", part)
+			}
+			days = append(days, day)
+		}
+	}
+	return days, nil
+}
+
+func formatPercentage(workMins, goalMins int) string {
+	if goalMins == 0 {
+		return "0%"
+	}
+	pct := (workMins * 100) / goalMins
+	return fmt.Sprintf("%d%% of %s", pct, humanDuration(goalMins))
+}
+
+func isWorkDay(t time.Time, workDays []int) bool {
+	weekday := int(t.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	for _, day := range workDays {
+		if day == weekday {
+			return true
+		}
+	}
+	return false
+}
+
+func main() {
+	reportFlag := flag.Bool("report", false, "print report and exit")
+	rng := flag.String("range", "today", "report range: today|week|month|year")
+	file := flag.String("file", defaultFile, "path to JSON store")
+	configFlag := flag.String("config", "", "config in format key=value (e.g., dailygoal=07:30 or workdays=Mon-Fri)")
+
+	flag.Parse()
+
+	if *configFlag != "" {
+		parts := strings.SplitN(*configFlag, "=", 2)
+		if len(parts) != 2 {
+			fmt.Fprintln(os.Stderr, "Invalid config format. Use key=value")
+			os.Exit(1)
+		}
+
+		store, err := loadStore(*file)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "load store:", err)
+			os.Exit(1)
+		}
+
+		switch parts[0] {
+		case "dailygoal":
+			mins, err := parseTimeToMinutes(parts[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Invalid time format:", err)
+				os.Exit(1)
+			}
+			store.Config.DailyGoalMinutes = mins
+		case "workdays":
+			days, err := parseWorkDays(parts[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Invalid workdays format:", err)
+				os.Exit(1)
+			}
+			store.Config.WorkDays = days
+		default:
+			fmt.Fprintln(os.Stderr, "Unknown config key:", parts[0])
+			os.Exit(1)
+		}
+
+		if err := saveStore(*file, store); err != nil {
+			fmt.Fprintln(os.Stderr, "save config:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Config updated: %s=%s\n", parts[0], parts[1])
+		return
+	}
+
+	if execPath, err := os.Executable(); err == nil {
+		ensureStartupAtLogin(execPath)
+	}
+
+	if dir := filepath.Dir(*file); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil && !os.IsExist(err) {
+			fmt.Fprintln(os.Stderr, "mkdir:", err)
+			os.Exit(1)
+		}
+	}
+
+	store, err := loadStore(*file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "load store:", err)
+		os.Exit(1)
+	}
+
+	if *reportFlag {
+		report(store, *rng)
+		return
+	}
+
+	fmt.Println("[timetracking] Tracking started. Ctrl+C to stop.")
+	for {
+		now := time.Now()
+		currentBin := floorToBin(now)
+		if la, err := lastActivity(now); err == nil {
+			working := !la.Before(currentBin) // last activity >= bin start
+			upsertBin(store, currentBin, working)
+			_ = saveStore(*file, store)
+		}
+		w, i := todayTotals(store)
+		fmt.Printf("[status] working: %s | idle: %s\r", humanDuration(w), humanDuration(i))
+		time.Sleep(sampleSeconds * time.Second)
+	}
 }
