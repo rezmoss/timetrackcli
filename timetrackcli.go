@@ -135,11 +135,14 @@ func (m dashboardModel) View() string {
 	rightColWidth := m.width/2 - 3
 
 	workingHoursBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
-		"💼 WORKING HOURS\n\n"+
-			"Working: %s\n"+
-			"Progress: %s",
-		workingStyle.Render(humanDuration(workMins)),
-		progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)),
+		"💼 WORKING HOURS\n\n" +
+			"Working: %s\n" +
+			func() string {
+				if isWorkDay(now, m.store.Config.WorkDays) {
+					return fmt.Sprintf("Progress: %s", progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)))
+				}
+				return "Progress: Weekend/Non-workday"
+			}(),
 	))
 
 	// Progress Bar Box (replace the gauge box)
@@ -154,10 +157,13 @@ func (m dashboardModel) View() string {
 	progressBar := createProgressBar(goalPct, progressBarWidth)
 
 	progressBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
-		"🎯 DAILY GOAL PROGRESS\n\n%s %d%%\n%s",
-		progressBar,
-		goalPct,
-		progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)),
+		"🎯 DAILY GOAL PROGRESS\n\n%s",
+		func() string {
+			if isWorkDay(now, m.store.Config.WorkDays) {
+				return fmt.Sprintf("%s %d%%\n%s", progressBar, goalPct, progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)))
+			}
+			return "No goal tracking on non-workdays"
+		}(),
 	))
 
 	// Summary stats box
