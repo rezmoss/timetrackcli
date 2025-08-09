@@ -265,8 +265,12 @@ func (m dashboardModel) View() string {
 	// Timeline box
 	timelineBox := createTimelineBox(m.store, rightColWidth, m.height-8) // Reserve space for header/footer
 
+	// 30-day grid box
+	grid30Days := create30DayGrid(m.store, leftColWidth)
+	gridBox := boxStyle.Width(leftColWidth).Render(grid30Days)
+
 	// Layout with full width
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, liveBox)
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, gridBox, liveBox)
 	rightColumn := timelineBox
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
@@ -849,6 +853,53 @@ func isWorkDay(t time.Time, workDays []int) bool {
 		}
 	}
 	return false
+}
+
+func create30DayGrid(s *Store, width int) string {
+	now := time.Now()
+	grid := "📅 LAST 30 DAYS\n\n"
+
+	// Create single row of 30 days
+	line := ""
+	for dayIndex := 0; dayIndex < 30; dayIndex++ {
+		targetDay := now.AddDate(0, 0, -(29 - dayIndex))
+
+		// Get working minutes for this day
+		dayStart := time.Date(targetDay.Year(), targetDay.Month(), targetDay.Day(), 0, 0, 0, 0, targetDay.Location())
+		dayEnd := dayStart.Add(24 * time.Hour)
+		bins := fetchBins(s, dayStart, dayEnd)
+
+		workMins := 0
+		for _, v := range bins {
+			if v == 1 {
+				workMins += binMinutes
+			}
+		}
+
+		// Determine symbol based on work hours
+		var symbol string
+
+		if workMins == 0 {
+			symbol = "⚫" // Gray circle - no data
+		} else if workMins < 120 { // Less than 2 hours
+			symbol = "⚪" // White circle
+		} else if workMins <= 300 { // 2-5 hours
+			symbol = "🟡" // Yellow circle
+		} else { // Above 5 hours
+			symbol = "🟢" // Green circle
+		}
+
+		// Use checkmark if it's a workday and meets goal
+		if isWorkDay(targetDay, s.Config.WorkDays) && workMins >= s.Config.DailyGoalMinutes {
+			symbol = "✅" // Checkmark for goal achieved
+		}
+
+		line += symbol
+	}
+
+	grid += line + "\n\n"
+	grid += "⚫ No data  ⚪ <2hrs  🟡 2-5hrs  🟢 >5hrs  ✅ Goal met"
+	return grid
 }
 
 func main() {
