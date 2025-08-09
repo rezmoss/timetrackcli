@@ -30,8 +30,15 @@ type Config struct {
 	WorkDays         []int `json:"work_days"` // 1=Monday, 7=Sunday
 }
 
+type Range struct {
+	Start  int64 `json:"start"`
+	End    int64 `json:"end"`
+	Status int   `json:"status"`
+}
+
 type Store struct {
 	Bins   map[string]int `json:"bins"`
+	Ranges []Range        `json:"ranges"`
 	Config Config         `json:"config"`
 }
 
@@ -76,6 +83,58 @@ var (
 )
 
 type tickMsg time.Time
+
+func compactBins(s *Store) {
+	if len(s.Bins) < 50 {
+		return
+	}
+
+	var times []time.Time
+	for k := range s.Bins {
+		if ts, err := strconv.ParseInt(k, 10, 64); err == nil {
+			times = append(times, time.Unix(ts, 0))
+		}
+	}
+
+	if len(times) == 0 {
+		return
+	}
+
+	for i := 0; i < len(times)-1; i++ {
+		for j := i + 1; j < len(times); j++ {
+			if times[i].After(times[j]) {
+				times[i], times[j] = times[j], times[i]
+			}
+		}
+	}
+
+	for i := 0; i < len(times); {
+		start := times[i]
+		status := s.Bins[strconv.FormatInt(start.Unix(), 10)]
+		j := i
+
+		for j < len(times)-1 {
+			next := times[j+1]
+			nextStatus := s.Bins[strconv.FormatInt(next.Unix(), 10)]
+			if nextStatus == status && next.Sub(times[j]) == binMinutes*time.Minute {
+				j++
+			} else {
+				break
+			}
+		}
+
+		end := times[j].Add(binMinutes * time.Minute)
+		s.Ranges = append(s.Ranges, Range{
+			Start:  start.Unix(),
+			End:    end.Unix(),
+			Status: status,
+		})
+
+		i = j + 1
+	}
+
+	s.Bins = map[string]int{}
+}
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second*30, func(t time.Time) tea.Msg {
@@ -149,12 +208,12 @@ func (m dashboardModel) View() string {
 		progressText,
 	))
 
-	// Progress Bar Box (replace the gauge box)
+	// Progress Bar Box
 	goalPct := 0
 	if m.store.Config.DailyGoalMinutes > 0 {
 		goalPct = (workMins * 100) / m.store.Config.DailyGoalMinutes
 	}
-	progressBarWidth := leftColWidth - 10 // Account for box padding
+	progressBarWidth := leftColWidth - 10
 	if progressBarWidth < 20 {
 		progressBarWidth = 20
 	}
@@ -203,7 +262,7 @@ func (m dashboardModel) View() string {
 		statusColor.Render(status),
 	))
 
-	// Timeline box - use full height available
+	// Timeline box
 	timelineBox := createTimelineBox(m.store, rightColWidth, m.height-8) // Reserve space for header/footer
 
 	// Layout with full width
@@ -249,7 +308,7 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	bins := fetchBins(s, start, now)
 
-	// Create full sequence from midnight to now (same as todayTotals function)
+	// Create full sequence from midnight to now
 	var seq []time.Time
 	for cur := floorToBin(start); cur.Before(floorToBin(now)); cur = cur.Add(binMinutes * time.Minute) {
 		seq = append(seq, cur)
@@ -266,7 +325,7 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 
 	timeline := "📊 TODAY'S TIMELINE\n\n"
 
-	// Build merged blocks (same logic as reportToday)
+	// Build merged blocks
 	var blocks []struct {
 		start    time.Time
 		end      time.Time
@@ -295,7 +354,7 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 	}
 
 	// Calculate how many entries we can show based on available height
-	maxEntries := maxHeight - 6 // Account for box borders and header
+	maxEntries := maxHeight - 6
 	if maxEntries < 5 {
 		maxEntries = 5
 	}
@@ -443,7 +502,7 @@ func upsertBin(s *Store, binStart time.Time, working bool) {
 	k := strconv.FormatInt(binStart.Unix(), 10)
 	cur := s.Bins[k]
 	if working && cur == 0 {
-		s.Bins[k] = 1 // once working, keep it working
+		s.Bins[k] = 1
 	} else if cur == 0 && !working {
 		if _, ok := s.Bins[k]; !ok {
 			s.Bins[k] = 0
@@ -453,6 +512,7 @@ func upsertBin(s *Store, binStart time.Time, working bool) {
 
 func fetchBins(s *Store, start, end time.Time) map[time.Time]int {
 	res := make(map[time.Time]int)
+
 	for k, v := range s.Bins {
 		ts, err := strconv.ParseInt(k, 10, 64)
 		if err != nil {
@@ -463,6 +523,22 @@ func fetchBins(s *Store, start, end time.Time) map[time.Time]int {
 			res[t] = v
 		}
 	}
+
+	for _, r := range s.Ranges {
+		rStart := time.Unix(r.Start, 0)
+		rEnd := time.Unix(r.End, 0)
+
+		if rEnd.Before(start) || !rStart.Before(end) {
+			continue
+		}
+
+		for cur := floorToBin(rStart); cur.Before(rEnd) && cur.Before(end); cur = cur.Add(binMinutes * time.Minute) {
+			if !cur.Before(start) {
+				res[cur] = r.Status
+			}
+		}
+	}
+
 	return res
 }
 
@@ -868,6 +944,11 @@ func main() {
 			working := !la.Before(currentBin) // last activity >= bin start
 			upsertBin(store, currentBin, working)
 			_ = saveStore(*file, store)
+
+			if len(store.Bins) > 100 {
+				compactBins(store)
+				_ = saveStore(*file, store)
+			}
 		}
 		w, i := todayTotals(store)
 		fmt.Printf("[status] working: %s | idle: %s\r", humanDuration(w), humanDuration(i))
