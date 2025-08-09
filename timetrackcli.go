@@ -229,15 +229,21 @@ func (m dashboardModel) View() string {
 		}(),
 	))
 
+	longestFocus, contextSwitches := calculateFocusStats(m.store)
+
 	// Summary stats box
 	summaryBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
 		"📊 TODAY'S SUMMARY\n\n"+
 			"Working: %s %s (%.1f%%)\n"+
 			"Idle: %s %s (%.1f%%)\n"+
-			"Total: %s",
+			"Total: %s\n\n"+
+			"Longest Focus: %s\n"+
+			"Context Switches: %s",
 		workingStyle.Render("●"), humanDuration(workMins), workPct,
 		idleStyle.Render("●"), humanDuration(idleMins), idlePct,
 		humanDuration(totalMins),
+		workingStyle.Render(humanDuration(longestFocus)),
+		progressStyle.Render(fmt.Sprintf("%d", contextSwitches)),
 	))
 
 	// Live status
@@ -309,7 +315,6 @@ func (m dashboardModel) View() string {
 		footer,
 	)
 
-	// Ensure content fills the terminal height
 	contentHeight := lipgloss.Height(fullContent)
 	if contentHeight < m.height {
 		padding := strings.Repeat("\n", m.height-contentHeight-1)
@@ -879,12 +884,11 @@ func isWorkDay(t time.Time, workDays []int) bool {
 func findBestWorstDays(s *Store) (bestDay time.Time, bestMins int, worstDay time.Time, worstMins int) {
 	now := time.Now()
 	bestMins = -1
-	worstMins = 9999 // Start with high value
+	worstMins = 9999
 
 	for dayIndex := 0; dayIndex < 30; dayIndex++ {
 		targetDay := now.AddDate(0, 0, -(29 - dayIndex))
 
-		// Get working minutes for this day
 		dayStart := time.Date(targetDay.Year(), targetDay.Month(), targetDay.Day(), 0, 0, 0, 0, targetDay.Location())
 		dayEnd := dayStart.Add(24 * time.Hour)
 		bins := fetchBins(s, dayStart, dayEnd)
@@ -921,7 +925,6 @@ func create30DayGrid(s *Store, width int) string {
 	now := time.Now()
 	grid := "📅 LAST 30 DAYS\n\n"
 
-	// Create single row of 30 days
 	line := ""
 	for dayIndex := 0; dayIndex < 30; dayIndex++ {
 		targetDay := now.AddDate(0, 0, -(29 - dayIndex))
@@ -953,7 +956,7 @@ func create30DayGrid(s *Store, width int) string {
 
 		// Use checkmark if it's a workday and meets goal
 		if isWorkDay(targetDay, s.Config.WorkDays) && workMins >= s.Config.DailyGoalMinutes {
-			symbol = "✅" // Checkmark for goal achieved
+			symbol = "✅"
 		}
 
 		line += symbol
@@ -962,6 +965,56 @@ func create30DayGrid(s *Store, width int) string {
 	grid += line + "\n\n"
 	grid += "⚫ No data  ⚪ <2hrs  🟡 2-5hrs  🟢 >5hrs  ✅ Goal met"
 	return grid
+}
+
+func calculateFocusStats(s *Store) (longestFocus int, contextSwitches int) {
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	bins := fetchBins(s, start, now)
+
+	// Create full sequence from midnight to now
+	var seq []time.Time
+	for cur := floorToBin(start); cur.Before(floorToBin(now)); cur = cur.Add(binMinutes * time.Minute) {
+		seq = append(seq, cur)
+	}
+
+	status := map[time.Time]int{}
+	for _, t := range seq {
+		status[t] = 0
+	}
+	for t, v := range bins {
+		status[t] = v
+	}
+
+	if len(seq) == 0 {
+		return 0, 0
+	}
+
+	// Find longest working session and count context switches
+	longestFocus = 0
+	currentFocus := 0
+	prevStatus := status[seq[0]]
+
+	for _, t := range seq {
+		currentStatus := status[t]
+
+		if currentStatus == 1 { // Working
+			currentFocus += binMinutes
+			if currentFocus > longestFocus {
+				longestFocus = currentFocus
+			}
+		} else { // Idle
+			currentFocus = 0
+		}
+
+		// Count context switches (status changes)
+		if currentStatus != prevStatus {
+			contextSwitches++
+		}
+		prevStatus = currentStatus
+	}
+
+	return longestFocus, contextSwitches
 }
 
 func main() {
