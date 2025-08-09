@@ -134,15 +134,19 @@ func (m dashboardModel) View() string {
 	leftColWidth := m.width/2 - 3
 	rightColWidth := m.width/2 - 3
 
+	var progressText string
+	if isWorkDay(now, m.store.Config.WorkDays) {
+		progressText = fmt.Sprintf("Progress: %s", progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)))
+	} else {
+		progressText = "Progress: Weekend/Non-workday"
+	}
+
 	workingHoursBox := boxStyle.Width(leftColWidth).Render(fmt.Sprintf(
-		"💼 WORKING HOURS\n\n" +
-			"Working: %s\n" +
-			func() string {
-				if isWorkDay(now, m.store.Config.WorkDays) {
-					return fmt.Sprintf("Progress: %s", progressStyle.Render(formatPercentage(workMins, m.store.Config.DailyGoalMinutes)))
-				}
-				return "Progress: Weekend/Non-workday"
-			}(),
+		"💼 WORKING HOURS\n\n"+
+			"Working: %s\n"+
+			"%s",
+		workingStyle.Render(humanDuration(workMins)),
+		progressText,
 	))
 
 	// Progress Bar Box (replace the gauge box)
