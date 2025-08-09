@@ -1,7 +1,7 @@
 # 🕐 TimeTrack CLI
 
 
-[TimeTrack CLI Dashboard](screenshot.png)
+![TimeTrack CLI Dashboard](screenshot.png)
 
 
 A lightweight, privacy-focused time tracking tool for macOS that automatically monitors your productivity without any manual intervention. Track your work hours, analyze patterns, and stay motivated with beautiful visualizations.
