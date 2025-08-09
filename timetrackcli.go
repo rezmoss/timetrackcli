@@ -269,8 +269,29 @@ func (m dashboardModel) View() string {
 	grid30Days := create30DayGrid(m.store, leftColWidth)
 	gridBox := boxStyle.Width(leftColWidth).Render(grid30Days)
 
+	// Best/Worst day box
+	bestDay, bestMins, worstDay, worstMins := findBestWorstDays(m.store)
+	bestWorstContent := "📈 BEST / WORST DAY (30 days)\n\n"
+	if bestMins > 0 {
+		bestWorstContent += fmt.Sprintf("Best: %s\n%s (%s)\n\n",
+			workingStyle.Render("🏆"),
+			bestDay.Format("Jan 2"),
+			workingStyle.Render(humanDuration(bestMins)))
+	} else {
+		bestWorstContent += "Best: No work days found\n\n"
+	}
+	if worstMins < 9999 {
+		bestWorstContent += fmt.Sprintf("Worst: %s\n%s (%s)",
+			idleStyle.Render("📉"),
+			worstDay.Format("Jan 2"),
+			idleStyle.Render(humanDuration(worstMins)))
+	} else {
+		bestWorstContent += "Worst: No work days found"
+	}
+	bestWorstBox := boxStyle.Width(leftColWidth).Render(bestWorstContent)
+
 	// Layout with full width
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, gridBox, liveBox)
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, gridBox, bestWorstBox, liveBox)
 	rightColumn := timelineBox
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
@@ -853,6 +874,47 @@ func isWorkDay(t time.Time, workDays []int) bool {
 		}
 	}
 	return false
+}
+
+func findBestWorstDays(s *Store) (bestDay time.Time, bestMins int, worstDay time.Time, worstMins int) {
+	now := time.Now()
+	bestMins = -1
+	worstMins = 9999 // Start with high value
+
+	for dayIndex := 0; dayIndex < 30; dayIndex++ {
+		targetDay := now.AddDate(0, 0, -(29 - dayIndex))
+
+		// Get working minutes for this day
+		dayStart := time.Date(targetDay.Year(), targetDay.Month(), targetDay.Day(), 0, 0, 0, 0, targetDay.Location())
+		dayEnd := dayStart.Add(24 * time.Hour)
+		bins := fetchBins(s, dayStart, dayEnd)
+
+		workMins := 0
+		for _, v := range bins {
+			if v == 1 {
+				workMins += binMinutes
+			}
+		}
+
+		// Skip days with no work
+		if workMins == 0 {
+			continue
+		}
+
+		// Check for best day
+		if workMins > bestMins {
+			bestMins = workMins
+			bestDay = targetDay
+		}
+
+		// Check for worst day (but not zero)
+		if workMins < worstMins {
+			worstMins = workMins
+			worstDay = targetDay
+		}
+	}
+
+	return
 }
 
 func create30DayGrid(s *Store, width int) string {
