@@ -239,11 +239,13 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	bins := fetchBins(s, start, now)
 
+	// Create full sequence from midnight to now (same as todayTotals function)
 	var seq []time.Time
 	for cur := floorToBin(start); cur.Before(floorToBin(now)); cur = cur.Add(binMinutes * time.Minute) {
 		seq = append(seq, cur)
 	}
 
+	// Initialize all bins as idle (0), then apply actual data
 	status := map[time.Time]int{}
 	for _, t := range seq {
 		status[t] = 0
@@ -254,19 +256,15 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 
 	timeline := "📊 TODAY'S TIMELINE\n\n"
 
-	// Calculate how many entries we can show based on available height
-	maxEntries := maxHeight - 6 // Account for box borders and header
-	if maxEntries < 5 {
-		maxEntries = 5
+	// Build merged blocks (same logic as reportToday)
+	var blocks []struct {
+		start    time.Time
+		end      time.Time
+		status   int
+		duration int
 	}
 
-	// Show most recent activity blocks that fit in the height
-	start_idx := 0
-	if len(seq) > maxEntries {
-		start_idx = len(seq) - maxEntries
-	}
-
-	for i := start_idx; i < len(seq); i++ {
+	for i := 0; i < len(seq); {
 		startBin := seq[i]
 		st := status[startBin]
 		j := i
@@ -274,10 +272,36 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 			j++
 		}
 		endBin := seq[j-1].Add(binMinutes * time.Minute)
+		duration := int(endBin.Sub(startBin).Minutes())
+
+		blocks = append(blocks, struct {
+			start    time.Time
+			end      time.Time
+			status   int
+			duration int
+		}{startBin, endBin, st, duration})
+
+		i = j
+	}
+
+	// Calculate how many entries we can show based on available height
+	maxEntries := maxHeight - 6 // Account for box borders and header
+	if maxEntries < 5 {
+		maxEntries = 5
+	}
+
+	// Show most recent blocks that fit in the height
+	start_idx := 0
+	if len(blocks) > maxEntries {
+		start_idx = len(blocks) - maxEntries
+	}
+
+	for i := start_idx; i < len(blocks); i++ {
+		block := blocks[i]
 
 		var indicator, desc string
 		var style lipgloss.Style
-		if st == 1 {
+		if block.status == 1 {
 			indicator = "🟢"
 			desc = "working"
 			style = workingStyle
@@ -287,11 +311,8 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 			style = idleStyle
 		}
 
-		duration := int(endBin.Sub(startBin).Minutes())
-
-		timeRange := fmt.Sprintf("%s-%s", startBin.Format("15:04"), endBin.Format("15:04"))
-		timeline += fmt.Sprintf("%s %s %s (%s)\n", indicator, timeRange, style.Render(desc), humanDuration(duration))
-		i = j - 1
+		timeRange := fmt.Sprintf("%s-%s", block.start.Format("15:04"), block.end.Format("15:04"))
+		timeline += fmt.Sprintf("%s %s %s (%s)\n", indicator, timeRange, style.Render(desc), humanDuration(block.duration))
 	}
 
 	return boxStyle.Width(width).Height(maxHeight).Render(timeline)
