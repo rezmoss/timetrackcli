@@ -68,6 +68,7 @@ The dashboard displays:
 - **Today's Summary**: Work/idle breakdown with focus statistics
 - **30-Day Overview**: Visual calendar showing productivity patterns
 - **Best/Worst Days**: Highest and lowest productivity days
+- **Period Goals**: Week, month, and year progress tracking with visual indicators
 - **Live Timeline**: Real-time activity blocks with durations
 - **Live Status**: Current activity state (Active/Idle with duration)
 
@@ -160,6 +161,47 @@ Daily goal progress: 18% of 8 hrs
 - **Context Switch Count**: Number of times you switched between working/idle
 - **Goal Progress**: Percentage of daily goal completed (workdays only)
 - **30-Day Trends**: Visual productivity patterns over time
+
+### Period Goals Tracking
+- **Week Progress**: Current week's work hours vs weekly goal with progress bar
+- **Month Progress**: Current month's work hours vs monthly goal with progress bar  
+- **Year Progress**: Current year's work hours vs yearly goal with progress bar
+- **Smart Goal Calculation**: Automatically calculates period goals based on workdays and daily goal settings
+- **Visual Progress**: Color-coded progress bars showing completion percentage for each period
+
+
+### Dashboard Components
+
+#### Working Hours & Goals
+![Working Hours](working-hours-box.png)
+
+Shows current day's working time and progress toward daily goal.
+
+![Daily Goal Progress](daily-goal-progress.png)
+
+Visual progress bar with percentage completion of daily work goal.
+
+![Period Goals](period-goals.png)
+
+Week, month, and year progress tracking with visual progress bars.
+
+#### Activity Analysis
+![Today's Summary](todays-summary.png)
+
+Work/idle breakdown with focus metrics and context switches.
+
+![30-Day Overview](30-day-overview.png)
+
+Visual calendar of last 30 days with productivity indicators.
+
+![Best/Worst Days](best-worst-days.png)
+
+Most and least productive days from the last 30 days.
+
+![Today's Timeline](todays-timeline.png)
+
+Chronological list of today's activity blocks with durations.
+
 
 ## 🛠️ Advanced Usage
 

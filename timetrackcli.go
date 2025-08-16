@@ -296,8 +296,48 @@ func (m dashboardModel) View() string {
 	}
 	bestWorstBox := boxStyle.Width(leftColWidth).Render(bestWorstContent)
 
+	// Period Progress box
+	weekHours, weekGoal, monthHours, monthGoal, yearHours, yearGoal := calculatePeriodProgress(m.store)
+	periodContent := "🗓️  PERIOD GOALS\n\n"
+
+	// Week progress
+	weekPct := 0
+	if weekGoal > 0 {
+		weekPct = (weekHours * 100) / weekGoal
+	}
+	weekBar := createProgressBar(weekPct, leftColWidth-15)
+	periodContent += fmt.Sprintf("Week: %s / %s\n%s %d%%\n\n",
+		workingStyle.Render(humanDuration(weekHours)),
+		progressStyle.Render(humanDuration(weekGoal)),
+		weekBar, weekPct)
+
+	// Month progress
+	monthPct := 0
+	if monthGoal > 0 {
+		monthPct = (monthHours * 100) / monthGoal
+	}
+	monthBar := createProgressBar(monthPct, leftColWidth-15)
+	periodContent += fmt.Sprintf("Month: %s / %s\n%s %d%%\n\n",
+		workingStyle.Render(humanDuration(monthHours)),
+		progressStyle.Render(humanDuration(monthGoal)),
+		monthBar, monthPct)
+
+	// Year progress
+	yearPct := 0
+	if yearGoal > 0 {
+		yearPct = (yearHours * 100) / yearGoal
+	}
+	yearBar := createProgressBar(yearPct, leftColWidth-15)
+	periodContent += fmt.Sprintf("Year: %s / %s\n%s %d%%",
+		workingStyle.Render(humanDuration(yearHours)),
+		progressStyle.Render(humanDuration(yearGoal)),
+		yearBar, yearPct)
+
+	periodBox := boxStyle.Width(leftColWidth).Render(periodContent)
+
 	// Layout with full width
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, gridBox, bestWorstBox, liveBox)
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, gridBox, bestWorstBox, periodBox, liveBox)
+
 	rightColumn := timelineBox
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
@@ -788,16 +828,18 @@ func ensureStartupAtLogin(execPath string) {
 	_ = os.MkdirAll(agentsDir, 0755)
 	outLog := filepath.Join(agentsDir, label+".out.log")
 	errLog := filepath.Join(agentsDir, label+".err.log")
+	dataFile := filepath.Join(filepath.Dir(execPath), "timetrackcli.json")
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>%s</string>
-  <key>ProgramArguments</key><array><string>%s</string></array>
+  <key>ProgramArguments</key><array><string>%s</string><string>--file</string><string>%s</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>%s</string>
   <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
-</dict></plist>`, label, execPath, outLog, errLog)
+</dict></plist>`, label, execPath, dataFile, filepath.Dir(execPath), outLog, errLog)
 
 	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
 		fmt.Println("[startup] Failed to write LaunchAgent:", err)
@@ -1015,6 +1057,67 @@ func calculateFocusStats(s *Store) (longestFocus int, contextSwitches int) {
 	}
 
 	return longestFocus, contextSwitches
+}
+
+func calculatePeriodProgress(s *Store) (weekHours, weekGoal, monthHours, monthGoal, yearHours, yearGoal int) {
+	now := time.Now()
+
+	// Week calculation (ISO week: Monday start)
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	weekStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -(weekday - 1))
+	weekEnd := weekStart.AddDate(0, 0, 7)
+
+	// Month calculation
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
+	// Year calculation
+	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
+	yearEnd := yearStart.AddDate(1, 0, 0)
+
+	// Calculate week hours and goal
+	weekBins := fetchBins(s, weekStart, weekEnd)
+	for _, v := range weekBins {
+		if v == 1 {
+			weekHours += binMinutes
+		}
+	}
+	for d := weekStart; d.Before(weekEnd); d = d.AddDate(0, 0, 1) {
+		if isWorkDay(d, s.Config.WorkDays) {
+			weekGoal += s.Config.DailyGoalMinutes
+		}
+	}
+
+	// Calculate month hours and goal
+	monthBins := fetchBins(s, monthStart, monthEnd)
+	for _, v := range monthBins {
+		if v == 1 {
+			monthHours += binMinutes
+		}
+	}
+	for d := monthStart; d.Before(monthEnd); d = d.AddDate(0, 0, 1) {
+		if isWorkDay(d, s.Config.WorkDays) {
+			monthGoal += s.Config.DailyGoalMinutes
+		}
+	}
+
+	// Calculate year hours and goal
+	yearBins := fetchBins(s, yearStart, yearEnd)
+	for _, v := range yearBins {
+		if v == 1 {
+			yearHours += binMinutes
+		}
+	}
+	for d := yearStart; d.Before(yearEnd); d = d.AddDate(0, 0, 1) {
+		if isWorkDay(d, s.Config.WorkDays) {
+			yearGoal += s.Config.DailyGoalMinutes
+		}
+	}
+
+	return
 }
 
 func main() {
