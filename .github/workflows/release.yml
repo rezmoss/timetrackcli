@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Get dependencies
+      run: go mod download
+    
+    - name: Build for macOS (Intel)
+      env:
+        GOOS: darwin
+        GOARCH: amd64
+      run: |
+        go build -ldflags="-s -w" -o timetrackcli-darwin-amd64 timetrackcli.go
+        chmod +x timetrackcli-darwin-amd64
+    
+    - name: Build for macOS (Apple Silicon)
+      env:
+        GOOS: darwin
+        GOARCH: arm64
+      run: |
+        go build -ldflags="-s -w" -o timetrackcli-darwin-arm64 timetrackcli.go
+        chmod +x timetrackcli-darwin-arm64
+    
+    - name: Create universal binary
+      run: |
+        lipo -create -output timetrackcli-darwin-universal timetrackcli-darwin-amd64 timetrackcli-darwin-arm64
+        chmod +x timetrackcli-darwin-universal
+    
+    - name: Create archives
+      run: |
+        tar -czf timetrackcli-darwin-amd64.tar.gz timetrackcli-darwin-amd64
+        tar -czf timetrackcli-darwin-arm64.tar.gz timetrackcli-darwin-arm64
+        tar -czf timetrackcli-darwin-universal.tar.gz timetrackcli-darwin-universal
+    
+    - name: Generate checksums
+      run: |
+        shasum -a 256 *.tar.gz > checksums.txt
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: |
+          timetrackcli-darwin-amd64.tar.gz
+          timetrackcli-darwin-arm64.tar.gz
+          timetrackcli-darwin-universal.tar.gz
+          checksums.txt
+        generate_release_notes: true
+        body: |
+          ## Installation
+          
+          ### Homebrew
+          ```bash
+          brew tap rezmoss/timetrackcli
+          brew install timetrackcli
+          ```
+          
+          ### Direct Download
+          Download the appropriate binary for your system and extract it.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
