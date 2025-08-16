@@ -21,6 +21,36 @@ A lightweight, privacy-focused time tracking tool for macOS that automatically m
 
 ### Installation
 
+
+### Homebrew (Recommended)
+```bash
+# Add tap and install
+brew tap rezmoss/timetrackcli
+brew install timetrackcli
+
+# Start tracking
+timetrackcli
+```
+
+### Direct Download
+Download the latest release for your system:
+
+- **[Universal Binary (Intel + Apple Silicon)](https://github.com/rezmoss/timetrackcli/releases/latest/download/timetrackcli-darwin-universal.tar.gz)** - Recommended
+- **[Intel Macs (x64)](https://github.com/rezmoss/timetrackcli/releases/latest/download/timetrackcli-darwin-amd64.tar.gz)**
+- **[Apple Silicon (ARM64)](https://github.com/rezmoss/timetrackcli/releases/latest/download/timetrackcli-darwin-arm64.tar.gz)**
+
+```bash
+# Extract and install (example with universal binary)
+curl -L https://github.com/rezmoss/timetrackcli/releases/latest/download/timetrackcli-darwin-universal.tar.gz | tar xz
+chmod +x timetrackcli-darwin-universal
+sudo mv timetrackcli-darwin-universal /usr/local/bin/timetrackcli
+
+# Start tracking
+timetrackcli
+```
+
+### Build from Source
+
 ```bash
 # Clone the repository
 git clone https://github.com/yourusername/timetrackcli.git
