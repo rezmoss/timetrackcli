@@ -11,6 +11,8 @@ A lightweight, privacy-focused time tracking tool for macOS that automatically m
 - **🔒 Privacy First**: All data stays on your machine, no cloud sync required
 - **⚡ Automatic Tracking**: Uses macOS system APIs to detect activity vs idle time
 - **📊 Beautiful Dashboard**: Real-time terminal dashboard with visual progress tracking
+- **🏷️ Time Tagging**: Tag time blocks for project/activity categorization with autocomplete
+- **📊 Tag Analytics**: View hours breakdown by tags across day/week/month periods
 - **📈 Comprehensive Reports**: Daily, weekly, monthly, and yearly insights
 - **🎯 Goal Setting**: Configurable daily work hour targets
 - **📅 Smart Scheduling**: Flexible workday configuration (Mon-Fri, custom days, etc.)
@@ -97,6 +99,7 @@ The dashboard displays:
 - **7-Day History**: Week-at-a-glance view with daily work hours and goal achievement indicators
 - **Daily Goal Progress**: Visual progress bar with percentage
 - **Today's Summary**: Work/idle breakdown with focus statistics
+- **Tag Analytics**: Hours breakdown by project/activity tags for day/week/month
 - **30-Day Overview**: Visual calendar showing productivity patterns
 - **Best/Worst Days**: Highest and lowest productivity days
 - **Period Goals**: Week, month, and year progress tracking with visual indicators
@@ -178,6 +181,20 @@ Daily goal progress: 18% of 8 hrs
 ./timetrackcli --file=~/Documents/work-time.json --dashboard
 ```
 
+
+### Tag Management
+
+Tag your work sessions to categorize time by project, activity type, or client:
+```bash
+# Launch dashboard and tag time blocks interactively
+./timetrackcli --dashboard
+
+# Navigate timeline with ↑↓ arrow keys
+# Press Enter on any time block to add/edit tags
+# Use Tab to see tag suggestions from previous entries
+# Tags are saved automatically and appear in analytics
+```
+
 ## 📊 Dashboard Features
 
 ### Visual Elements
@@ -192,6 +209,8 @@ Daily goal progress: 18% of 8 hrs
 - **Context Switch Count**: Number of times you switched between working/idle
 - **Goal Progress**: Percentage of daily goal completed (workdays only)
 - **30-Day Trends**: Visual productivity patterns over time
+- **Tag Analytics**: Time distribution across projects/activities for multiple periods
+
 
 ### Period Goals Tracking
 - **Week Progress**: Current week's work hours vs weekly goal with progress bar
@@ -229,6 +248,11 @@ Visual calendar of last 30 days with productivity indicators.
 
 Most and least productive days from the last 30 days.
 
+![Tag Analytics](tag-analytics.png)
+
+Breakdown of work hours by project/activity tags showing day, week, and month totals for each tag.
+
+
 ![Today's Timeline](todays-timeline.png)
 
 Chronological list of today's activity blocks with durations.
@@ -254,6 +278,8 @@ The tool is designed to run continuously in the background. When started, it:
 - **Format**: JSON with automatic compression
 - **Privacy**: All data stays local, no network requests
 - **Backup**: Consider backing up your JSON file periodically
+- **Tags**: Stored as part of time ranges with searchable tag list
+
 
 ### Performance
 
@@ -341,6 +367,7 @@ Contributions welcome! Please:
 - **Goal adjustment**: Adjust daily goals based on actual productivity patterns
 - **Backup data**: Periodically backup your `timetrackcli.json` file
 - **Custom schedules**: Configure workdays to match your actual schedule
+- **Project tracking**: Use tag analytics to see time distribution across projectsRetry
 
 ---
 
