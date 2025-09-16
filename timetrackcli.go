@@ -335,8 +335,10 @@ func (m dashboardModel) View() string {
 
 	periodBox := boxStyle.Width(leftColWidth).Render(periodContent)
 
+	sevenDayBox := boxStyle.Width(leftColWidth).Render(create7DayWorkingHours(m.store, leftColWidth))
+
 	// Layout with full width
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, gridBox, bestWorstBox, periodBox, liveBox)
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, sevenDayBox, gridBox, bestWorstBox, periodBox, liveBox)
 
 	rightColumn := timelineBox
 
@@ -659,6 +661,70 @@ func reportToday(s *Store) {
 	if isWorkDay(now, s.Config.WorkDays) {
 		fmt.Printf("Daily goal progress: %s\n", formatPercentage(totalWork, s.Config.DailyGoalMinutes))
 	}
+}
+
+func create7DayWorkingHours(s *Store, width int) string {
+	now := time.Now()
+	content := "📊 LAST 7 DAYS\n\n"
+
+	totalWeekHours := 0
+
+	for dayIndex := 0; dayIndex < 7; dayIndex++ {
+		targetDay := now.AddDate(0, 0, -(6 - dayIndex)) // Start from 6 days ago to today
+
+		// Get working minutes for this day
+		dayStart := time.Date(targetDay.Year(), targetDay.Month(), targetDay.Day(), 0, 0, 0, 0, targetDay.Location())
+		dayEnd := dayStart.Add(24 * time.Hour)
+		bins := fetchBins(s, dayStart, dayEnd)
+
+		workMins := 0
+		for _, v := range bins {
+			if v == 1 {
+				workMins += binMinutes
+			}
+		}
+		totalWeekHours += workMins
+
+		// Format the day
+		dayName := targetDay.Format("Mon")
+		dateStr := targetDay.Format("Jan 2")
+
+		// Color coding based on work hours and if it's a work day
+		var dayStyle lipgloss.Style
+		var indicator string
+
+		isWork := isWorkDay(targetDay, s.Config.WorkDays)
+
+		if workMins == 0 {
+			dayStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
+			indicator = "⚫"
+		} else if isWork && workMins >= s.Config.DailyGoalMinutes {
+			dayStyle = workingStyle
+			indicator = "✅"
+		} else if workMins > 0 {
+			dayStyle = progressStyle
+			indicator = "🟡"
+		} else {
+			dayStyle = idleStyle
+			indicator = "🔴"
+		}
+
+		// Format working hours
+		hoursStr := humanDuration(workMins)
+		if workMins == 0 {
+			hoursStr = "No work"
+		}
+
+		content += fmt.Sprintf("%s %s %s: %s\n",
+			indicator,
+			dayName,
+			dateStr,
+			dayStyle.Render(hoursStr))
+	}
+
+	content += fmt.Sprintf("\nTotal: %s", workingStyle.Render(humanDuration(totalWeekHours)))
+
+	return content
 }
 
 // Daily aggregate table used for week/month ranges
