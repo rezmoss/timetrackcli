@@ -94,6 +94,7 @@ The tracker samples your activity every 30 seconds and categorizes time into 5-m
 
 The dashboard displays:
 - **Working Hours**: Current session time and daily goal progress
+- **7-Day History**: Week-at-a-glance view with daily work hours and goal achievement indicators
 - **Daily Goal Progress**: Visual progress bar with percentage
 - **Today's Summary**: Work/idle breakdown with focus statistics
 - **30-Day Overview**: Visual calendar showing productivity patterns
@@ -231,6 +232,10 @@ Most and least productive days from the last 30 days.
 ![Today's Timeline](todays-timeline.png)
 
 Chronological list of today's activity blocks with durations.
+
+![7-Day History](7-day-history.png)
+
+Recent week's daily work hours with visual indicators showing goal achievement and productivity patterns.
 
 
 ## 🛠️ Advanced Usage
