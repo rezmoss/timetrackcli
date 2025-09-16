@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,22 +32,42 @@ type Config struct {
 }
 
 type Range struct {
-	Start  int64 `json:"start"`
-	End    int64 `json:"end"`
-	Status int   `json:"status"`
+	Start  int64  `json:"start"`
+	End    int64  `json:"end"`
+	Status int    `json:"status"`
+	Tag    string `json:"tag,omitempty"`
+	Note   string `json:"note,omitempty"`
 }
 
 type Store struct {
 	Bins   map[string]int `json:"bins"`
 	Ranges []Range        `json:"ranges"`
 	Config Config         `json:"config"`
+	Tags   []string       `json:"tags,omitempty"`
+}
+
+type TimelineBlock struct {
+	start    time.Time
+	end      time.Time
+	status   int
+	duration int
+	tag      string
+	note     string
+	rangeIdx int // Index in ranges array, -1 if from bins
 }
 
 type dashboardModel struct {
-	store    *Store
-	filePath string
-	width    int
-	height   int
+	store                 *Store
+	filePath              string
+	width                 int
+	height                int
+	selectedTimeline      int  // Currently selected timeline item
+	showTagDialog         bool // Whether tag dialog is open
+	tagInput              string
+	availableTags         []string
+	selectedTag           int
+	timelineBlocks        []TimelineBlock
+	showingTagSuggestions bool
 }
 
 var (
@@ -80,6 +101,25 @@ var (
 			BorderForeground(lipgloss.Color("#874BFD")).
 			Padding(1, 2).
 			MarginBottom(1)
+
+	selectedStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#7D56F4")).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Bold(true)
+
+	tagStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#F7DC6F")).
+			Foreground(lipgloss.Color("#000000")).
+			Padding(0, 1).
+			MarginRight(1)
+
+	dialogStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Background(lipgloss.Color("#2D2D2D")).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Padding(1, 2).
+			Width(40)
 )
 
 type tickMsg time.Time
@@ -142,25 +182,212 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+func (m dashboardModel) handleTagDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.showTagDialog = false
+		m.showingTagSuggestions = false
+	case "enter":
+		if m.showingTagSuggestions && m.selectedTag < len(m.availableTags) {
+			m.tagInput = m.availableTags[m.selectedTag]
+			m.showingTagSuggestions = false
+		} else {
+			// Save the tag
+			if m.selectedTimeline < len(m.timelineBlocks) {
+				block := m.timelineBlocks[m.selectedTimeline]
+				if err := m.saveTag(block, m.tagInput); err == nil {
+					// Add tag to available tags if new
+					if m.tagInput != "" && !contains(m.store.Tags, m.tagInput) {
+						m.store.Tags = append(m.store.Tags, m.tagInput)
+						sort.Strings(m.store.Tags)
+					}
+					saveStore(m.filePath, m.store)
+					// Rebuild timeline blocks to reflect the changes
+					m.buildTimelineBlocks()
+				}
+			}
+			m.showTagDialog = false
+			m.showingTagSuggestions = false
+		}
+	case "up":
+		if m.showingTagSuggestions && m.selectedTag > 0 {
+			m.selectedTag--
+		}
+	case "down":
+		if m.showingTagSuggestions && m.selectedTag < len(m.availableTags)-1 {
+			m.selectedTag++
+		}
+	case "tab":
+		if len(m.availableTags) > 0 {
+			m.showingTagSuggestions = !m.showingTagSuggestions
+			if m.showingTagSuggestions {
+				m.selectedTag = 0
+			}
+		}
+	case "backspace":
+		if len(m.tagInput) > 0 {
+			m.tagInput = m.tagInput[:len(m.tagInput)-1]
+		}
+	default:
+		if len(msg.String()) == 1 {
+			m.tagInput += msg.String()
+		}
+	}
+	return m, nil
+}
+
+func (m *dashboardModel) buildTimelineBlocks() {
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	bins := fetchBins(m.store, start, now)
+
+	// Create full sequence from midnight to now
+	var seq []time.Time
+	for cur := floorToBin(start); cur.Before(floorToBin(now)); cur = cur.Add(binMinutes * time.Minute) {
+		seq = append(seq, cur)
+	}
+
+	// Initialize all bins as idle (0), then apply actual data
+	status := map[time.Time]int{}
+	for _, t := range seq {
+		status[t] = 0
+	}
+	for t, v := range bins {
+		status[t] = v
+	}
+
+	// Build merged blocks
+	m.timelineBlocks = nil
+	for i := 0; i < len(seq); {
+		startBin := seq[i]
+		st := status[startBin]
+		j := i
+		for j < len(seq) && status[seq[j]] == st {
+			j++
+		}
+		endBin := seq[j-1].Add(binMinutes * time.Minute)
+		duration := int(endBin.Sub(startBin).Minutes())
+
+		// Find matching range for tag info
+		tag := ""
+		note := ""
+		rangeIdx := -1
+		for idx, r := range m.store.Ranges {
+			rStart := time.Unix(r.Start, 0)
+			rEnd := time.Unix(r.End, 0)
+			if !startBin.Before(rStart) && startBin.Before(rEnd) {
+				tag = r.Tag
+				note = r.Note
+				rangeIdx = idx
+				break
+			}
+		}
+
+		m.timelineBlocks = append(m.timelineBlocks, TimelineBlock{
+			start:    startBin,
+			end:      endBin,
+			status:   st,
+			duration: duration,
+			tag:      tag,
+			note:     note,
+			rangeIdx: rangeIdx,
+		})
+
+		i = j
+	}
+}
+
+func (m *dashboardModel) saveTag(block TimelineBlock, tag string) error {
+	// If this block corresponds to a range, update it
+	if block.rangeIdx >= 0 && block.rangeIdx < len(m.store.Ranges) {
+		m.store.Ranges[block.rangeIdx].Tag = tag
+		return nil
+	}
+
+	// Otherwise, create a new range for this time period
+	newRange := Range{
+		Start:  block.start.Unix(),
+		End:    block.end.Unix(),
+		Status: block.status,
+		Tag:    tag,
+	}
+	m.store.Ranges = append(m.store.Ranges, newRange)
+	return nil
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
 func (m dashboardModel) Init() tea.Cmd {
 	return tickCmd()
+
+}
+
+func (m *dashboardModel) renderTagDialog() string {
+	content := "Tag this time block:\n\n"
+	content += fmt.Sprintf("Input: %s\n", m.tagInput)
+
+	if m.showingTagSuggestions && len(m.availableTags) > 0 {
+		content += "\nSuggestions (↑↓ to select):\n"
+		for i, tag := range m.availableTags {
+			if i == m.selectedTag {
+				content += selectedStyle.Render(fmt.Sprintf("  %s", tag)) + "\n"
+			} else {
+				content += fmt.Sprintf("  %s\n", tag)
+			}
+		}
+	}
+
+	content += "\nPress Tab for suggestions, Enter to save, Esc to cancel"
+
+	return dialogStyle.Render(content)
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.showTagDialog {
+			return m.handleTagDialog(msg)
+		}
+
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
+		case "up", "k":
+			if m.selectedTimeline > 0 {
+				m.selectedTimeline--
+			}
+		case "down", "j":
+			if m.selectedTimeline < len(m.timelineBlocks)-1 {
+				m.selectedTimeline++
+			}
+		case "enter":
+			if len(m.timelineBlocks) > 0 {
+				m.showTagDialog = true
+				m.tagInput = ""
+				m.selectedTag = 0
+				m.showingTagSuggestions = false
+				// Load available tags
+				m.availableTags = append([]string{}, m.store.Tags...)
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	case tickMsg:
-		// Reload store data
-		store, err := loadStore(m.filePath)
-		if err == nil {
-			m.store = store
+		// Only reload store data if we're not in tag dialog mode
+		// to avoid overwriting unsaved changes
+		if !m.showTagDialog {
+			store, err := loadStore(m.filePath)
+			if err == nil {
+				m.store = store
+				m.buildTimelineBlocks()
+			}
 		}
 		return m, tickCmd()
 	}
@@ -190,8 +417,9 @@ func (m dashboardModel) View() string {
 	}
 
 	// Calculate column widths - use full terminal width
-	leftColWidth := m.width/2 - 3
-	rightColWidth := m.width/2 - 3
+	leftColWidth := m.width/3 - 2
+	rightColWidth := (m.width*2)/3 - 4
+	rightSubColWidth := (rightColWidth - 4) / 2
 
 	var progressText string
 	if isWorkDay(now, m.store.Config.WorkDays) {
@@ -269,11 +497,11 @@ func (m dashboardModel) View() string {
 	))
 
 	// Timeline box
-	timelineBox := createTimelineBox(m.store, rightColWidth, m.height-8) // Reserve space for header/footer
+	timelineBox := m.createTimelineBox(rightColWidth, m.height/2-4) // Take up half the right side height
 
 	// 30-day grid box
 	grid30Days := create30DayGrid(m.store, leftColWidth)
-	gridBox := boxStyle.Width(leftColWidth).Render(grid30Days)
+	gridBox := boxStyle.Width(rightSubColWidth).Render(grid30Days)
 
 	// Best/Worst day box
 	bestDay, bestMins, worstDay, worstMins := findBestWorstDays(m.store)
@@ -294,7 +522,7 @@ func (m dashboardModel) View() string {
 	} else {
 		bestWorstContent += "Worst: No work days found"
 	}
-	bestWorstBox := boxStyle.Width(leftColWidth).Render(bestWorstContent)
+	bestWorstBox := boxStyle.Width(rightSubColWidth).Render(bestWorstContent)
 
 	// Period Progress box
 	weekHours, weekGoal, monthHours, monthGoal, yearHours, yearGoal := calculatePeriodProgress(m.store)
@@ -333,14 +561,24 @@ func (m dashboardModel) View() string {
 		progressStyle.Render(humanDuration(yearGoal)),
 		yearBar, yearPct)
 
-	periodBox := boxStyle.Width(leftColWidth).Render(periodContent)
+	periodBox := boxStyle.Width(rightSubColWidth).Render(periodContent)
 
-	sevenDayBox := boxStyle.Width(leftColWidth).Render(create7DayWorkingHours(m.store, leftColWidth))
+	sevenDayBox := boxStyle.Width(rightSubColWidth).Render(create7DayWorkingHours(m.store, rightSubColWidth))
 
 	// Layout with full width
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, sevenDayBox, gridBox, bestWorstBox, periodBox, liveBox)
+	// Tag analytics box
+	// Tag analytics box
+	tagAnalyticsBox := boxStyle.Width(leftColWidth).Render(createTagAnalyticsBox(m.store, leftColWidth))
 
-	rightColumn := timelineBox
+	// Reorganized layout - tag analytics on left side
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, workingHoursBox, progressBox, summaryBox, tagAnalyticsBox, liveBox)
+
+	// Right column with timeline at top, then other widgets below
+	rightTopColumn := timelineBox
+	rightBottomLeft := lipgloss.JoinVertical(lipgloss.Left, sevenDayBox, gridBox)
+	rightBottomRight := lipgloss.JoinVertical(lipgloss.Left, bestWorstBox, periodBox)
+	rightBottomRow := lipgloss.JoinHorizontal(lipgloss.Top, rightBottomLeft, rightBottomRight)
+	rightColumn := lipgloss.JoinVertical(lipgloss.Left, rightTopColumn, rightBottomRow)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
 
@@ -375,10 +613,11 @@ func createProgressBar(percentage int, width int) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("#04B575")).Render(bar)
 }
 
-func createTimelineBox(s *Store, width, maxHeight int) string {
+func (m *dashboardModel) createTimelineBox(width, maxHeight int) string {
+
 	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	bins := fetchBins(s, start, now)
+	bins := fetchBins(m.store, start, now)
 
 	// Create full sequence from midnight to now
 	var seq []time.Time
@@ -395,50 +634,22 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 		status[t] = v
 	}
 
-	timeline := "📊 TODAY'S TIMELINE\n\n"
-
-	// Build merged blocks
-	var blocks []struct {
-		start    time.Time
-		end      time.Time
-		status   int
-		duration int
-	}
-
-	for i := 0; i < len(seq); {
-		startBin := seq[i]
-		st := status[startBin]
-		j := i
-		for j < len(seq) && status[seq[j]] == st {
-			j++
-		}
-		endBin := seq[j-1].Add(binMinutes * time.Minute)
-		duration := int(endBin.Sub(startBin).Minutes())
-
-		blocks = append(blocks, struct {
-			start    time.Time
-			end      time.Time
-			status   int
-			duration int
-		}{startBin, endBin, st, duration})
-
-		i = j
-	}
+	timeline := "📊 TODAY'S TIMELINE (↑↓ to navigate, Enter to tag)\n\n"
 
 	// Calculate how many entries we can show based on available height
-	maxEntries := maxHeight - 6
+	maxEntries := maxHeight - 8 // Reserve more space for dialog
 	if maxEntries < 5 {
 		maxEntries = 5
 	}
 
 	// Show most recent blocks that fit in the height
 	start_idx := 0
-	if len(blocks) > maxEntries {
-		start_idx = len(blocks) - maxEntries
+	if len(m.timelineBlocks) > maxEntries {
+		start_idx = len(m.timelineBlocks) - maxEntries
 	}
 
-	for i := start_idx; i < len(blocks); i++ {
-		block := blocks[i]
+	for i := start_idx; i < len(m.timelineBlocks); i++ {
+		block := m.timelineBlocks[i]
 
 		var indicator, desc string
 		var style lipgloss.Style
@@ -453,10 +664,31 @@ func createTimelineBox(s *Store, width, maxHeight int) string {
 		}
 
 		timeRange := fmt.Sprintf("%s-%s", block.start.Format("15:04"), block.end.Format("15:04"))
-		timeline += fmt.Sprintf("%s %s %s (%s)\n", indicator, timeRange, style.Render(desc), humanDuration(block.duration))
+
+		// Build the line content
+		line := fmt.Sprintf("%s %s %s (%s)", indicator, timeRange, style.Render(desc), humanDuration(block.duration))
+
+		// Add tag if present
+		if block.tag != "" {
+			line += " " + tagStyle.Render(block.tag)
+		}
+
+		// Highlight if selected
+		if i == m.selectedTimeline {
+			line = selectedStyle.Render(line)
+		}
+
+		timeline += line + "\n"
 	}
 
-	return boxStyle.Width(width).Height(maxHeight).Render(timeline)
+	// Add tag dialog if showing
+	content := timeline
+	if m.showTagDialog {
+		tagDialog := m.renderTagDialog()
+		content += "\n" + tagDialog
+	}
+
+	return boxStyle.Width(width).Height(maxHeight).Render(content)
 }
 
 func loadStore(path string) (*Store, error) {
@@ -1186,6 +1418,145 @@ func calculatePeriodProgress(s *Store) (weekHours, weekGoal, monthHours, monthGo
 	return
 }
 
+func calculateTagHours(s *Store, period string) map[string]int {
+	now := time.Now()
+	var start, end time.Time
+
+	switch period {
+	case "day":
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		end = start.Add(24 * time.Hour)
+	case "week":
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -(weekday - 1))
+		end = start.AddDate(0, 0, 7)
+	case "month":
+		start = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		end = start.AddDate(0, 1, 0)
+	}
+
+	tagHours := make(map[string]int)
+	untaggedHours := 0
+
+	// Calculate from ranges with tags first
+	for _, r := range s.Ranges {
+		rStart := time.Unix(r.Start, 0)
+		rEnd := time.Unix(r.End, 0)
+
+		if r.Status != 1 || rEnd.Before(start) || !rStart.Before(end) {
+			continue
+		}
+
+		// Calculate overlap with period
+		actualStart := rStart
+		if actualStart.Before(start) {
+			actualStart = start
+		}
+		actualEnd := rEnd
+		if actualEnd.After(end) {
+			actualEnd = end
+		}
+
+		mins := int(actualEnd.Sub(actualStart).Minutes())
+		if mins > 0 {
+			if r.Tag != "" {
+				tagHours[r.Tag] += mins
+			} else {
+				untaggedHours += mins
+			}
+		}
+	}
+
+	// Add untagged working time from bins
+	bins := fetchBins(s, start, end)
+	for t, v := range bins {
+		if v == 1 {
+			// Check if this time is already covered by a tagged range
+			covered := false
+			for _, r := range s.Ranges {
+				rStart := time.Unix(r.Start, 0)
+				rEnd := time.Unix(r.End, 0)
+				if !t.Before(rStart) && t.Before(rEnd) {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				untaggedHours += binMinutes
+			}
+		}
+	}
+
+	if untaggedHours > 0 {
+		tagHours["(untagged)"] = untaggedHours
+	}
+
+	return tagHours
+}
+
+func createTagAnalyticsBox(s *Store, width int) string {
+	content := "🏷️  TAG ANALYTICS\n\n"
+
+	dayTags := calculateTagHours(s, "day")
+	weekTags := calculateTagHours(s, "week")
+	monthTags := calculateTagHours(s, "month")
+
+	// Collect all unique tags and sort them consistently
+	allTagsMap := make(map[string]bool)
+	for tag := range dayTags {
+		allTagsMap[tag] = true
+	}
+	for tag := range weekTags {
+		allTagsMap[tag] = true
+	}
+	for tag := range monthTags {
+		allTagsMap[tag] = true
+	}
+
+	if len(allTagsMap) == 0 {
+		content += "No tagged time recorded"
+		return content
+	}
+
+	// Convert to sorted slice for consistent ordering
+	var allTags []string
+	for tag := range allTagsMap {
+		allTags = append(allTags, tag)
+	}
+	sort.Strings(allTags)
+
+	// Always put (untagged) at the end if it exists
+	for i, tag := range allTags {
+		if tag == "(untagged)" {
+			// Move to end
+			allTags = append(allTags[:i], allTags[i+1:]...)
+			allTags = append(allTags, "(untagged)")
+			break
+		}
+	}
+
+	for _, tag := range allTags {
+		dayHrs := dayTags[tag]
+		weekHrs := weekTags[tag]
+		monthHrs := monthTags[tag]
+
+		if tag == "(untagged)" {
+			content += fmt.Sprintf("%s\n", idleStyle.Render(tag))
+		} else {
+			content += fmt.Sprintf("%s\n", tagStyle.Render(tag))
+		}
+		content += fmt.Sprintf("  Day: %s | Week: %s | Month: %s\n\n",
+			workingStyle.Render(humanDuration(dayHrs)),
+			workingStyle.Render(humanDuration(weekHrs)),
+			workingStyle.Render(humanDuration(monthHrs)))
+	}
+
+	return content
+}
+
 func main() {
 	reportFlag := flag.Bool("report", false, "print report and exit")
 	rng := flag.String("range", "today", "report range: today|week|month|year")
@@ -1258,6 +1629,7 @@ func main() {
 			store:    store,
 			filePath: *file,
 		}
+		m.buildTimelineBlocks()
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error running dashboard: %v\n", err)
@@ -1277,6 +1649,12 @@ func main() {
 		currentBin := floorToBin(now)
 		if la, err := lastActivity(now); err == nil {
 			working := !la.Before(currentBin) // last activity >= bin start
+
+			// Always reload store before saving to preserve dashboard changes
+			if freshStore, err := loadStore(*file); err == nil {
+				store = freshStore
+			}
+
 			upsertBin(store, currentBin, working)
 			_ = saveStore(*file, store)
 
